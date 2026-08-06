@@ -6,11 +6,12 @@ Railway, called from the Next.js app at scripturestack.j4den.com.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from typing import Annotated, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, StringConstraints
 
@@ -33,6 +34,20 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Embedding is CPU-heavy, so /embed is gated on a shared secret rather than
+# left open to the internet. Only the Next.js app calls it, and it does so
+# server-side, so a header check costs nothing and keeps strangers from
+# driving inference on our dyno. /health and / stay open for uptime checks.
+def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
+    expected = os.getenv("ML_API_KEY")
+    if not expected:
+        # Unset means "not yet rolled out" — fail open so a missing var can't
+        # take the service down. Set ML_API_KEY in Railway to enforce.
+        return
+    if x_api_key is None or not hmac.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+
 
 # Lazy-loaded model — keeps cold start fast, model loads on first request.
 _model = None
@@ -75,7 +90,7 @@ def health():
     return {"status": "ok", "model_loaded": _model is not None}
 
 
-@app.post("/embed", response_model=EmbedResponse)
+@app.post("/embed", response_model=EmbedResponse, dependencies=[Depends(require_api_key)])
 def embed(req: EmbedRequest):
     try:
         model = get_model()
