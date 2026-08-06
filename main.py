@@ -1,22 +1,24 @@
 """
 Scripture Stack ML service.
 
-FastAPI service exposing sentence embeddings, sentiment analysis, and
-stylometric features over scripture text. Runs on Railway, called from
-the Next.js app at scripturestack.j4den.com.
+FastAPI service exposing sentence embeddings over scripture text. Runs on
+Railway, called from the Next.js app at scripturestack.j4den.com.
 """
 from __future__ import annotations
 
+import logging
 import os
-from typing import List
+from typing import Annotated, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+logger = logging.getLogger("scripturestack-ml")
 
 app = FastAPI(
     title="Scripture Stack ML",
-    description="Embeddings, sentiment, and stylometrics for biblical text.",
+    description="Sentence embeddings for biblical text.",
     version="0.1.0",
 )
 
@@ -46,8 +48,15 @@ def get_model():
     return _model
 
 
+# Verses and search queries are short. 2000 chars is roomy for either;
+# anything bigger is a caller bug, not a real request.
+EmbedText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)
+]
+
+
 class EmbedRequest(BaseModel):
-    texts: List[str] = Field(..., min_length=1, max_length=256)
+    texts: List[EmbedText] = Field(..., min_length=1, max_length=256)
 
 
 class EmbedResponse(BaseModel):
@@ -77,4 +86,6 @@ def embed(req: EmbedRequest):
             embeddings=vectors,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # Full detail goes to the server log; the client just gets a 500.
+        logger.exception("embedding failed")
+        raise HTTPException(status_code=500, detail="embedding failed") from exc
