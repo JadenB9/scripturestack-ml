@@ -1,6 +1,12 @@
 # scripturestack-ml
 
-Python ML service for [Scripture Stack](https://scripturestack.j4den.com). Provides sentence embeddings, sentiment, and stylometric features for biblical text. Called from the Next.js frontend.
+The Python half of [Scripture Stack](https://scripturestack.j4den.com).
+
+The site's semantic search works by comparing meaning rather than keywords,
+and that means turning text into vectors. This is the service that does it:
+a small FastAPI app wrapping sentence-transformers. The Next.js frontend
+sends it verses (or your search query), it sends back embeddings, and the
+site compares them with pgvector to find verses that mean similar things.
 
 ## Endpoints
 
