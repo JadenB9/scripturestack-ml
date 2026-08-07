@@ -42,10 +42,11 @@ app.add_middleware(
 def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
     expected = os.getenv("ML_API_KEY")
     if not expected:
-        # Unset means "not yet rolled out" — fail open so a missing var can't
-        # take the service down. Set ML_API_KEY in Railway to enforce.
-        return
-    if x_api_key is None or not hmac.compare_digest(x_api_key, expected):
+        # Fail closed: a missing key must not leave /embed open to the internet
+        # (unauthenticated inference is a cost/DoS vector). Set ML_API_KEY in Railway
+        # and match it in the Next.js app to enable access.
+        raise HTTPException(status_code=503, detail="service not configured")
+    if x_api_key is None or not hmac.compare_digest(x_api_key.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
