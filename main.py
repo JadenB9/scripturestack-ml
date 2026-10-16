@@ -9,10 +9,12 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import threading
 from typing import Annotated, List
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 
 logger = logging.getLogger("scripturestack-ml")
@@ -32,8 +34,21 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
+
+# 256 texts x 2000 chars is about 0.5 MB, so anything past 1 MB is not a real
+# request. Rejecting on Content-Length stops it before the body is parsed.
+MAX_BODY_BYTES = 1_000_000
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length is not None and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
+        return JSONResponse({"detail": "request body too large"}, status_code=413)
+    return await call_next(request)
+
 
 # Embedding is CPU-heavy, so /embed is gated on a shared secret rather than
 # left open to the internet. Only the Next.js app calls it, and it does so
@@ -45,22 +60,26 @@ def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
         # Unset means "not yet rolled out" — fail open so a missing var can't
         # take the service down. Set ML_API_KEY in Railway to enforce.
         return
-    if x_api_key is None or not hmac.compare_digest(x_api_key, expected):
+    if x_api_key is None or not hmac.compare_digest(x_api_key.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
 # Lazy-loaded model — keeps cold start fast, model loads on first request.
 _model = None
+_model_lock = threading.Lock()
 
 
 def get_model():
     global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
+    # /embed runs in a thread pool, so two first requests could both load the
+    # model without the lock.
+    with _model_lock:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer
 
-        model_name = os.getenv("EMBED_MODEL", "sentence-transformers/all-mpnet-base-v2")
-        _model = SentenceTransformer(model_name)
-    return _model
+            model_name = os.getenv("EMBED_MODEL", "sentence-transformers/all-mpnet-base-v2")
+            _model = SentenceTransformer(model_name)
+        return _model
 
 
 # Verses and search queries are short. 2000 chars is roomy for either;
